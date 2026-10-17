@@ -44,6 +44,32 @@ workflows:
         script: |
           npx cap sync android
 
+      - name: Add microphone permissions
+        script: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          manifest = Path("android/app/src/main/AndroidManifest.xml")
+          content = manifest.read_text()
+
+          permissions = [
+              "android.permission.RECORD_AUDIO",
+              "android.permission.MODIFY_AUDIO_SETTINGS",
+          ]
+
+          for permission in permissions:
+              entry = f'<uses-permission android:name="{permission}" />'
+              if permission not in content:
+                  content = content.replace(
+                      "<application",
+                      f"    {entry}\n    <application",
+                      1
+                  )
+
+          manifest.write_text(content)
+          print("Microphone permissions added to AndroidManifest.xml")
+          PY
+
       - name: Build debug APK
         script: |
           cd android
