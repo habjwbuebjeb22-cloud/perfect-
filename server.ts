@@ -1,6 +1,8 @@
+
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
-import path from 'path';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { analyzeRecitationLocally } from './src/utils/tajweedEngine.ts';
@@ -8,13 +10,18 @@ import { SURAHS_DATA } from './src/data/quranData.ts';
 
 dotenv.config();
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const PORT = process.env.PORT
+  ? parseInt(process.env.PORT, 10)
+  : 3000;
 
 app.use(express.json({ limit: '50mb' }));
 
 // Health / Status endpoint
-app.get('/api/status', (req, res) => {
+app.get('/api/status', (_req, res) => {
   res.json({
     status: 'ok',
     aiEnabled: Boolean(process.env.GEMINI_API_KEY),
@@ -50,81 +57,107 @@ app.post('/api/analyze-recitation', async (req, res) => {
       acousticMetrics
     } = req.body;
 
-    const surah = SURAHS_DATA.find(s => s.id === Number(surahId));
-    const ayah = surah?.ayahs.find(a => a.number === Number(ayahNumber));
+    const surah = SURAHS_DATA.find(
+      s => s.id === Number(surahId)
+    );
+
+    const ayah = surah?.ayahs.find(
+      a => a.number === Number(ayahNumber)
+    );
 
     if (!ayah) {
-      return res.status(400).json({ error: 'Ayah not found in database' });
+      return res.status(400).json({
+        error: 'Ayah not found in database'
+      });
     }
 
-    // If Gemini API Key is available and audio is provided, perform deep AI Tajweed analysis
+    // AI-powered audio analysis
     if (process.env.GEMINI_API_KEY && audioBase64) {
       try {
-        const cleanBase64 = audioBase64.replace(/^data:audio\/\w+(?:;codecs=[^;]+)?;base64,/, '').trim();
-        const ai = new GoogleGenAI();
+        const cleanBase64 = String(audioBase64)
+          .replace(/^data:audio\/[^;]+;base64,/, '')
+          .trim();
+
+        if (!cleanBase64) {
+          throw new Error('بيانات التسجيل الصوتي فارغة');
+        }
+
+        const ai = new GoogleGenAI({
+          apiKey: process.env.GEMINI_API_KEY
+        });
+
         const prompt = `
-أنت شيخ ومقرئ متقن ومحكّم معتمد في مسابقات التلاوة الدولية، خبير في علم التجويد برواية حفص عن عاصم من طريق الشاطبية.
-مهمتك: الاستماع الفعلي والدقيق لتلاوة القارئ في الملف الصوتي المرفق، ومقارنتها حرفاً بحرف وحركة بحركة مع الآية الكريمة:
+أنت خبير في علم التجويد برواية حفص عن عاصم من طريق الشاطبية.
+استمع إلى التسجيل الصوتي الفعلي وقارنه بالآية التالية:
+
 السورة: ${surah?.nameAr} (رقم ${surah?.id})
 رقم الآية: ${ayah.number}
-النص القرآني بالرسم العثماني المضبوط: "${ayah.textUthmani}"
-الكلمات الأصلية بالترتيب: ${ayah.words.map(w => `${w.index}. [${w.uthmani}] (${w.simple})`).join(' | ')}
-مستوى التقييم المطلوب: ${proficiencyLevel} (مبتدئ: التركيز على اللحن الجلي وسلامة الحركات والكلمات | متوسط: التنبيه على المدود وأحكام النون والميم | متقدم: أدق تفاصيل المخارج ومراتب التفخيم والغنات).
+النص القرآني: "${ayah.textUthmani}"
+الكلمات بالترتيب: ${ayah.words.map(
+  w => `${w.index}. [${w.uthmani}] (${w.simple})`
+).join(' | ')}
+مستوى القارئ: ${proficiencyLevel}
 
-قواعد صارمة وأمانة علمية:
-1. تحقق أولاً: هل يحتوي الصوت على تلاوة قرآنية بشرية مسموعة ومطابقة للآية؟
-   - إذا كان الصوت صامتاً، أو ضوضاء فقط، أو غير مفهوم، أو كلاماً غير قرآني: ضع "evaluationStatus": "unable_to_evaluate", "overallScore": null, واكتب في "generalAdviceAr": "تعذّر تقييم دقة التلاوة: لم يُلتقط صوت تلاوة واضحة للآية الكريمة".
-2. لا تعطِ درجة 100% مطلقاً كافتراض! يجب تدقيق كل كلمة.
-   - اللحن الجلي: أي تغيير في حركة (مثل فتحة بدل ضمة كقراءة أنعمتُ، أو تسكين متحرك)، أو إبدال حرف (مثل ذ->ز، ض->د أو ظ، ط->ت، ق->ك)، أو حذف كلمة/حرف. يجب خفض "pronunciationScore" بدرجة ملموسة وذكر الفارق الصوتي في "phoneticDifference".
-   - اللحن الخفي: مد ناقص عن مقداره (مثلاً مد منفصل أو متصل أُدي بحركتين فقط بدل 4-5)، إسقاط قلقلة الدال عند الوقف، اختلاس زمن الغنة. يؤثر على "tajweedScore".
-3. أرجع أربع درجات منفصلة:
-   - wordAlignmentScore: نسبة الكلمات المنطوقة من الآية (0-100)
-   - pronunciationScore: صحة الحروف والحركات الإعرابية (اللحن الجلي) (0-100)
-   - tajweedScore: صحة أحكام التجويد (اللحن الخفي) (0-100)
-   - recordingConfidence: مستوى الثقة في التقييم وجودة التسجيل الصوتي (0-100)
-4. إذا وُجد شك أو انخفضت الثقة عن 75%: ضع "needsHumanReview": true، ولا تزعم اكتشاف أحكام لم تتأكد منها بيقين.
+التزم بالأمانة العلمية:
+1. إذا كان الصوت صامتاً أو غير واضح أو لا يحتوي على تلاوة يمكن تقييمها، أرجع:
+   evaluationStatus = "unable_to_evaluate"
+   overallScore = null
+2. لا تفترض أن القراءة صحيحة لمجرد أن التسجيل يحتوي على صوت.
+3. قيّم مطابقة الكلمات، ومخارج الحروف والحركات، وأحكام التجويد.
+4. عند الشك، استخدم "uncertain" واطلب مراجعة بشرية.
+5. لا تدّعِ اكتشاف خطأ صوتي إلا إذا كان مسموعاً بوضوح.
+6. لا تعطِ درجة كاملة 100 افتراضياً.
 
-أرجع النتيجة بصيغة JSON حصراً بهذا المخطط:
+أرجع JSON فقط وفق المخطط التالي:
 {
-  "evaluationStatus": "evaluated" | "needs_human_review" | "unable_to_evaluate",
-  "overallScore": number | null,
+  "evaluationStatus": "evaluated",
+  "overallScore": 0,
   "scoresBreakdown": {
-    "wordAlignmentScore": number,
-    "pronunciationScore": number,
-    "tajweedScore": number,
-    "recordingConfidence": number
+    "wordAlignmentScore": 0,
+    "pronunciationScore": 0,
+    "tajweedScore": 0,
+    "recordingConfidence": 0
   },
   "wordsEvaluation": [
     {
-      "wordIndex": number,
-      "wordUthmani": string,
-      "status": "correct" | "warning" | "error" | "omitted" | "permissible_waqf" | "uncertain",
-      "phoneticDifference": string (الفارق الصوتي الدقيق إن وُجد),
-      "ruleName": string,
-      "explanationAr": string,
-      "stepByStepPronunciation": [string, string],
-      "confidenceScore": number (0-100),
-      "needsHumanReview": boolean,
-      "severity": "none" | "jali" | "khafi" | "waqf_note"
+      "wordIndex": 1,
+      "wordUthmani": "",
+      "status": "correct",
+      "phoneticDifference": "",
+      "ruleName": "",
+      "explanationAr": "",
+      "stepByStepPronunciation": [],
+      "confidenceScore": 0,
+      "needsHumanReview": false,
+      "severity": "none"
     }
   ],
-  "jaliErrorsCount": number,
-  "khafiErrorsCount": number,
-  "waqfNotesCount": number,
-  "generalAdviceAr": string,
+  "jaliErrorsCount": 0,
+  "khafiErrorsCount": 0,
+  "waqfNotesCount": 0,
+  "generalAdviceAr": "",
   "disclaimerAr": "تنبيه علمي: الذكاء الاصطناعي أداة مساعدة، وعدم رصد خطأ آلي لا يعني بالضرورة صحة القراءة؛ فالمدار على المشافهة والتلقي."
 }
+
+حالات الكلمات المسموحة:
+correct, warning, error, omitted, permissible_waqf, uncertain
+
+درجات الخطأ المسموحة:
+none, jali, khafi, waqf_note
+
+إذا لم تكن متأكداً من التقييم، لا تخترع أخطاء أو درجات.
 `;
 
         const response = await ai.models.generateContent({
-          model: 'models/gemini-3.8-flash',
+          // يجب أن يكون اسم النموذج متاحاً في حساب Gemini
+          model: 'gemini-2.5-flash',
           contents: [
             {
               role: 'user',
               parts: [
                 {
                   inlineData: {
-                    mimeType: mimeType.split(';')[0] || 'audio/webm',
+                    mimeType: String(mimeType).split(';')[0] || 'audio/webm',
                     data: cleanBase64
                   }
                 },
@@ -140,10 +173,17 @@ app.post('/api/analyze-recitation', async (req, res) => {
         const responseText = response.text || '';
         const parsed = JSON.parse(responseText);
 
-        const isUnable = parsed.evaluationStatus === 'unable_to_evaluate' || parsed.overallScore === null;
-        const rawScore = isUnable ? null : (parsed.overallScore ?? (parsed.jaliErrorsCount > 0 ? 75 : 92));
-        // Capped at 95% maximum to respect scientific honesty (never machine 100%)
-        const finalScore = rawScore !== null ? Math.min(95, Math.max(10, rawScore)) : null;
+        const isUnable =
+          parsed.evaluationStatus === 'unable_to_evaluate' ||
+          parsed.overallScore === null;
+
+        const rawScore = isUnable
+          ? null
+          : Number(parsed.overallScore ?? 0);
+
+        const finalScore = rawScore !== null && Number.isFinite(rawScore)
+          ? Math.min(95, Math.max(0, rawScore))
+          : null;
 
         const jaliCount = parsed.jaliErrorsCount ?? 0;
         const khafiCount = parsed.khafiErrorsCount ?? 0;
@@ -151,39 +191,55 @@ app.post('/api/analyze-recitation', async (req, res) => {
         return res.json({
           source: 'gemini_multimodal_tajweed',
           ayahNumber: ayah.number,
-          evaluationStatus: isUnable ? 'unable_to_evaluate' : (jaliCount > 0 || parsed.evaluationStatus === 'needs_human_review' ? 'needs_human_review' : 'evaluated'),
+          evaluationStatus: isUnable
+            ? 'unable_to_evaluate'
+            : (
+                jaliCount > 0 ||
+                parsed.evaluationStatus === 'needs_human_review'
+              )
+              ? 'needs_human_review'
+              : 'evaluated',
           overallScore: finalScore,
           proficiencyLevel,
           totalWords: ayah.words.length,
-          correctWordsCount: parsed.wordsEvaluation?.filter((w: any) => w.status === 'correct').length ?? 0,
+          correctWordsCount:
+            parsed.wordsEvaluation?.filter(
+              (w: any) => w.status === 'correct'
+            ).length ?? 0,
           jaliErrorsCount: jaliCount,
           khafiErrorsCount: khafiCount,
           waqfNotesCount: parsed.waqfNotesCount ?? 0,
-          scoresBreakdown: parsed.scoresBreakdown || {
-            wordAlignmentScore: finalScore !== null ? 100 : 0,
-            pronunciationScore: finalScore !== null ? Math.max(40, 100 - (jaliCount * 30)) : 0,
-            tajweedScore: finalScore !== null ? Math.max(40, 100 - (khafiCount * 18)) : 0,
-            recordingConfidence: finalScore !== null ? (jaliCount > 0 ? 70 : 85) : 15
-          },
-          wordsEvaluation: parsed.wordsEvaluation || [],
+          scoresBreakdown: parsed.scoresBreakdown ?? null,
+          wordsEvaluation: parsed.wordsEvaluation ?? [],
           acousticSummary: {
-            tempoEstBpm: 70,
-            audioClarity: isUnable ? 'unreliable' : 'excellent',
-            totalDurationSeconds: acousticMetrics?.durationMs ? Math.round(acousticMetrics.durationMs / 1000) : 4
+            tempoEstBpm: null,
+            audioClarity: isUnable ? 'unreliable' : 'unverified',
+            totalDurationSeconds: acousticMetrics?.durationMs
+              ? Math.round(acousticMetrics.durationMs / 1000)
+              : null
           },
-          generalAdviceAr: parsed.generalAdviceAr || (isUnable ? 'تعذّر تقييم دقة التلاوة: يرجى التأكد من تشغيل الميكروفون بوضوح.' : 'تم تحليل التلاوة وتدقيق مخارج الحركات وأحكام التجويد.'),
-          disclaimerAr: parsed.disclaimerAr || 'تنبيه علمي: الذكاء الاصطناعي أداة مساعدة، وعدم رصد خطأ آلي لا يعني بالضرورة صحة القراءة؛ فالمدار على المشافهة والتلقي.'
+          generalAdviceAr: parsed.generalAdviceAr ||
+            'يرجى مراجعة التلاوة مع قارئ متقن.',
+          disclaimerAr: parsed.disclaimerAr ||
+            'تنبيه علمي: الذكاء الاصطناعي أداة مساعدة، وعدم رصد خطأ آلي لا يعني بالضرورة صحة القراءة؛ فالمدار على المشافهة والتلقي.'
         });
       } catch (aiErr) {
-        console.warn('Gemini multimodal analysis error (will fallback to local DSP engine):', aiErr);
+        console.error('Gemini audio analysis failed:', aiErr);
       }
     }
 
-    // Local deterministic analysis:
-    // CRITICAL: NEVER substitute authentic Ayah text if user transcription wasn't provided!
-    // If no real speech transcription was provided, evaluate as empty/unable_to_evaluate rather than giving a fake 100%!
-    const transcription = spokenTranscriptionFallback?.trim() || '';
-    const report = analyzeRecitationLocally(ayah, transcription, proficiencyLevel, acousticMetrics);
+    // Local fallback: evaluates only the provided transcription.
+    const transcription =
+      typeof spokenTranscriptionFallback === 'string'
+        ? spokenTranscriptionFallback.trim()
+        : '';
+
+    const report = analyzeRecitationLocally(
+      ayah,
+      transcription,
+      proficiencyLevel,
+      acousticMetrics
+    );
 
     return res.json({
       source: 'local_tajweed_engine',
@@ -191,7 +247,10 @@ app.post('/api/analyze-recitation', async (req, res) => {
     });
   } catch (err: any) {
     console.error('Recitation analysis error:', err);
-    res.status(500).json({ error: err.message || 'Error analyzing recitation' });
+
+    return res.status(500).json({
+      error: err?.message || 'Error analyzing recitation'
+    });
   }
 });
 
@@ -201,10 +260,12 @@ async function startServer() {
       server: { middlewareMode: true },
       appType: 'spa'
     });
+
     app.use(vite.middlewares);
   } else {
     app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (req, res) => {
+
+    app.get('*', (_req, res) => {
       res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
     });
   }
@@ -214,4 +275,7 @@ async function startServer() {
   });
 }
 
-startServer();
+startServer().catch(err => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});
