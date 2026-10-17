@@ -3,7 +3,10 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import dotenv from 'dotenv';
-import { build as viteBuild, createServer as createViteServer } from 'vite';
+import {
+  build as viteBuild,
+  createServer as createViteServer
+} from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import { SURAHS_DATA } from './src/data/quranData.ts';
 
@@ -11,6 +14,7 @@ dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
+const MODEL_NAME = 'gemini-3.8-flash';
 
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -32,16 +36,14 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: '50mb' }));
 
-// فحص حالة السيرفر
 app.get('/api/status', (_req, res) => {
   res.json({
     status: 'ok',
     aiEnabled: Boolean(process.env.GEMINI_API_KEY),
-    model: 'gemini-2.5-flash'
+    model: MODEL_NAME
   });
 });
 
-// تحليل التلاوة
 app.post('/api/analyze-recitation', async (req, res) => {
   try {
     const {
@@ -70,10 +72,11 @@ app.post('/api/analyze-recitation', async (req, res) => {
 
     const surahs = SURAHS_DATA as any[];
     const surah = surahs.find(
-      (item) => Number(item.id ?? item.number) === Number(surahId)
+      item => Number(item.id ?? item.number) === Number(surahId)
     );
 
     const ayahs = surah?.ayahs ?? surah?.verses ?? [];
+
     const ayah = Array.isArray(ayahs)
       ? ayahs.find((item: any, index: number) => {
           const number =
@@ -107,9 +110,12 @@ app.post('/api/analyze-recitation', async (req, res) => {
 التفريغ المساعد: ${spokenTranscriptionFallback || 'غير متوفر'}
 المقاييس الصوتية: ${JSON.stringify(acousticMetrics ?? {})}
 
-حلل التسجيل الصوتي الفعلي وقارنه بالنص المرجعي إذا توفر.
-لا تخترع أخطاء، ولا تجزم بخطأ لا يمكن سماعه بوضوح.
-قيّم النطق والتلاوة والتجويد، وقدّم نصيحة تعليمية بالعربية.
+استمع إلى التسجيل الصوتي الفعلي وحلّل التلاوة.
+قارنها بالنص المرجعي إذا كان متوفراً.
+قيّم النطق والتلاوة وأحكام التجويد التي يمكن سماعها بوضوح.
+لا تخترع أخطاء ولا تجزم بخطأ لا يمكن التحقق منه من الصوت.
+لا تعتبر اختلاف الصوت أو اللهجة وحده خطأً في التلاوة.
+اكتب نصيحة تعليمية واضحة باللغة العربية.
 
 أعد JSON فقط بهذا الشكل:
 {
@@ -124,7 +130,7 @@ errors وwords مصفوفتان.
 `;
 
     const result = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: MODEL_NAME,
       contents: [
         {
           role: 'user',
@@ -156,15 +162,21 @@ errors وwords مصفوفتان.
     try {
       analysis = JSON.parse(result.text);
     } catch {
-      console.error('Invalid Gemini JSON response:', result.text);
+      console.error(
+        'Invalid Gemini JSON response:',
+        result.text
+      );
 
       return res.status(502).json({
-        error: 'تعذّر قراءة نتيجة تحليل التلاوة.'
+        error: 'تعذّرت قراءة نتيجة تحليل التلاوة.'
       });
     }
 
     return res.json({
-      score: Number(analysis.score ?? 0),
+      score: Math.max(
+        0,
+        Math.min(100, Number(analysis.score) || 0)
+      ),
       errors: Array.isArray(analysis.errors)
         ? analysis.errors
         : [],
@@ -175,11 +187,33 @@ errors وwords مصفوفتان.
       surahId,
       ayahNumber
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Recitation analysis failed:', error);
 
+    const status = Number(error?.status ?? error?.code);
+    const message = String(error?.message ?? '');
+
+    if (
+      status === 404 ||
+      message.includes('NOT_FOUND') ||
+      message.includes('not available')
+    ) {
+      return res.status(502).json({
+        error:
+          'نموذج الذكاء الاصطناعي غير متاح لهذا المفتاح. تحقق من اسم النموذج وإمكانية الوصول إليه.'
+      });
+    }
+
+    if (status === 429) {
+      return res.status(429).json({
+        error:
+          'وصل الطلب إلى حد الاستخدام المسموح. حاول لاحقاً.'
+      });
+    }
+
     return res.status(500).json({
-      error: 'حدث خطأ أثناء تحليل التلاوة. حاول مرة أخرى.'
+      error:
+        'حدث خطأ أثناء تحليل التلاوة. راجع سجلات السيرفر لمعرفة السبب.'
     });
   }
 });
@@ -189,9 +223,14 @@ async function startServer() {
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      configFile: path.resolve(projectRoot, 'vite.config.ts'),
+      configFile: path.resolve(
+        projectRoot,
+        'vite.config.ts'
+      ),
       root: projectRoot,
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true
+      },
       appType: 'spa'
     });
 
@@ -203,18 +242,21 @@ async function startServer() {
     console.log('Project directory:', projectRoot);
     console.log('Web build directory:', distPath);
 
-    // بناء الواجهة تلقائياً إذا كانت مفقودة
     if (!fs.existsSync(indexPath)) {
-      console.log('dist/index.html is missing. Starting Vite build...');
+      console.log(
+        'dist/index.html is missing. Starting Vite build...'
+      );
 
       await viteBuild({
-        configFile: path.resolve(projectRoot, 'vite.config.ts'),
+        configFile: path.resolve(
+          projectRoot,
+          'vite.config.ts'
+        ),
         root: projectRoot,
         logLevel: 'info'
       });
     }
 
-    // لا يبدأ السيرفر بواجهة غير موجودة
     if (!fs.existsSync(indexPath)) {
       throw new Error(
         `Build failed: index.html was not created at ${indexPath}`
@@ -235,7 +277,7 @@ async function startServer() {
   });
 }
 
-startServer().catch((error) => {
+startServer().catch(error => {
   console.error('Failed to start server:', error);
   process.exit(1);
 });
