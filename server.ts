@@ -1,8 +1,6 @@
-
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { analyzeRecitationLocally } from './src/utils/tajweedEngine.ts';
@@ -10,13 +8,29 @@ import { SURAHS_DATA } from './src/data/quranData.ts';
 
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 const app = express();
 const PORT = process.env.PORT
   ? parseInt(process.env.PORT, 10)
   : 3000;
+
+// Allow the Android app to call this API.
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'Content-Type, Authorization'
+  );
+  res.setHeader(
+    'Access-Control-Allow-Methods',
+    'GET, POST, OPTIONS'
+  );
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
 
 app.use(express.json({ limit: '50mb' }));
 
@@ -149,7 +163,6 @@ none, jali, khafi, waqf_note
 `;
 
         const response = await ai.models.generateContent({
-          // يجب أن يكون اسم النموذج متاحاً في حساب Gemini
           model: 'gemini-2.5-flash',
           contents: [
             {
@@ -157,7 +170,8 @@ none, jali, khafi, waqf_note
               parts: [
                 {
                   inlineData: {
-                    mimeType: String(mimeType).split(';')[0] || 'audio/webm',
+                    mimeType:
+                      String(mimeType).split(';')[0] || 'audio/webm',
                     data: cleanBase64
                   }
                 },
@@ -181,9 +195,10 @@ none, jali, khafi, waqf_note
           ? null
           : Number(parsed.overallScore ?? 0);
 
-        const finalScore = rawScore !== null && Number.isFinite(rawScore)
-          ? Math.min(95, Math.max(0, rawScore))
-          : null;
+        const finalScore =
+          rawScore !== null && Number.isFinite(rawScore)
+            ? Math.min(95, Math.max(0, rawScore))
+            : null;
 
         const jaliCount = parsed.jaliErrorsCount ?? 0;
         const khafiCount = parsed.khafiErrorsCount ?? 0;
@@ -218,10 +233,12 @@ none, jali, khafi, waqf_note
               ? Math.round(acousticMetrics.durationMs / 1000)
               : null
           },
-          generalAdviceAr: parsed.generalAdviceAr ||
+          generalAdviceAr:
+            parsed.generalAdviceAr ||
             'يرجى مراجعة التلاوة مع قارئ متقن.',
-          disclaimerAr: parsed.disclaimerAr ||
-            'تنبيه علمي: الذكاء الاصطناعي أداة مساعدة، وعدم رصد خطأ آلي لا يعني بالضرورة صحة القراءة؛ فالمدار على المشافهة والتلقي.'
+          disclaimerAr:
+            parsed.disclaimerAr ||
+            'تنبيه علمي: الذكاء الاصطناعي أداة مساعدة، وعدم رصد خطأ صوتي آلي لا يعني بالضرورة صحة القراءة؛ فالمدار على المشافهة والتلقي.'
         });
       } catch (aiErr) {
         console.error('Gemini audio analysis failed:', aiErr);
@@ -263,10 +280,13 @@ async function startServer() {
 
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
+    // Use the project root as the base directory.
+    const distPath = path.resolve(process.cwd(), 'dist');
+
+    app.use(express.static(distPath));
 
     app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+      res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
