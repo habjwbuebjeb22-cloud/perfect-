@@ -1,0 +1,6 @@
+{
+  "name": "مُتقِن - معلّم القرآن والتجويد الذكي",
+  "description": "تطبيق أندرويد احترافي لتعليم تلاوة القرآن الكريم وتصحيح القراءة وأحكام التجويد بالذكاء الاصطناعي مع قياس دقيق وموثوق لمخارج الحروف والمدود والغنات",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
