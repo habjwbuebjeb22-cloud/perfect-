@@ -22,6 +22,15 @@ workflows:
           npm install --legacy-peer-deps
           npm install @capacitor/core @capacitor/cli @capacitor/android --legacy-peer-deps
 
+      - name: Verify project files
+        script: |
+          echo "Current directory:"
+          pwd
+          echo "Project files:"
+          ls -la
+          test -f package.json
+          test -f index.html
+
       - name: Configure Capacitor
         script: |
           cat > capacitor.config.json <<'EOF'
@@ -35,6 +44,9 @@ workflows:
       - name: Build web application
         script: |
           npm run build
+          echo "Checking generated web files:"
+          ls -la dist
+          test -f dist/index.html
 
       - name: Add Android platform
         script: |
@@ -67,7 +79,7 @@ workflows:
                   )
 
           manifest.write_text(content)
-          print("Microphone permissions added to AndroidManifest.xml")
+          print("Microphone permissions configured.")
           PY
 
       - name: Build debug APK
