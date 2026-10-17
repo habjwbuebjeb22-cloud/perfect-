@@ -1,9 +1,9 @@
 
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
-import path from 'node:path';
 import fs from 'node:fs';
+import path from 'node:path';
 import dotenv from 'dotenv';
+import { build as viteBuild, createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import { SURAHS_DATA } from './src/data/quranData.ts';
 
@@ -37,8 +37,7 @@ app.get('/api/status', (_req, res) => {
   res.json({
     status: 'ok',
     aiEnabled: Boolean(process.env.GEMINI_API_KEY),
-    model: 'gemini-2.5-flash',
-    message: 'Mutqin server is running'
+    model: 'gemini-2.5-flash'
   });
 });
 
@@ -61,7 +60,9 @@ app.post('/api/analyze-recitation', async (req, res) => {
       });
     }
 
-    if (!process.env.GEMINI_API_KEY) {
+    const apiKey = process.env.GEMINI_API_KEY;
+
+    if (!apiKey) {
       return res.status(503).json({
         error: 'مفتاح Gemini غير مضبوط في إعدادات الاستضافة.'
       });
@@ -74,14 +75,14 @@ app.post('/api/analyze-recitation', async (req, res) => {
 
     const ayahs = surah?.ayahs ?? surah?.verses ?? [];
     const ayah = Array.isArray(ayahs)
-      ? ayahs.find(
-          (item: any, index: number) =>
-            Number(
-              typeof item === 'object'
-                ? item.numberInSurah ?? item.number ?? item.id
-                : index + 1
-            ) === Number(ayahNumber)
-        )
+      ? ayahs.find((item: any, index: number) => {
+          const number =
+            typeof item === 'object'
+              ? item.numberInSurah ?? item.number ?? item.id
+              : index + 1;
+
+          return Number(number) === Number(ayahNumber);
+        })
       : undefined;
 
     const targetAyah =
@@ -94,34 +95,32 @@ app.post('/api/analyze-recitation', async (req, res) => {
       ''
     );
 
-    const ai = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY
-    });
+    const ai = new GoogleGenAI({ apiKey });
 
     const prompt = `
-أنت معلّم قرآن كريم متخصص في التجويد وتصحيح التلاوة العربية.
+أنت معلّم قرآن كريم متخصص في تصحيح التلاوة والتجويد.
 
-رقم السورة: ${surahId}
+السورة: ${surahId}
 رقم الآية: ${ayahNumber}
-نص الآية المرجعي إن توفر: ${targetAyah || 'غير متوفر'}
+النص المرجعي: ${targetAyah || 'غير متوفر'}
 مستوى المتعلم: ${proficiencyLevel || 'مبتدئ'}
-التفريغ النصي المساعد إن توفر: ${spokenTranscriptionFallback || 'غير متوفر'}
-المقاييس الصوتية المساعدة إن توفرت: ${JSON.stringify(acousticMetrics ?? {})}
+التفريغ المساعد: ${spokenTranscriptionFallback || 'غير متوفر'}
+المقاييس الصوتية: ${JSON.stringify(acousticMetrics ?? {})}
 
-استمع إلى التسجيل الصوتي نفسه، وقارنه بالنص المرجعي إن توفر.
-لا تخترع أخطاء لا تستطيع سماعها بوضوح.
-قيّم النطق والتلاوة والتجويد بإنصاف، وميّز بين الخطأ المؤكد وما لا يمكن الجزم به.
-أعد النتيجة بصيغة JSON فقط، بالشكل التالي:
+حلل التسجيل الصوتي الفعلي وقارنه بالنص المرجعي إذا توفر.
+لا تخترع أخطاء، ولا تجزم بخطأ لا يمكن سماعه بوضوح.
+قيّم النطق والتلاوة والتجويد، وقدّم نصيحة تعليمية بالعربية.
+
+أعد JSON فقط بهذا الشكل:
 {
   "score": 0,
   "errors": [],
   "words": [],
-  "advice": "نصيحة قصيرة باللغة العربية"
+  "advice": "نصيحة باللغة العربية"
 }
 
-اجعل score رقماً من 0 إلى 100.
-واجعل errors وwords مصفوفتين.
-كل معلومة للمستخدم يجب أن تكون باللغة العربية.
+score رقم من 0 إلى 100.
+errors وwords مصفوفتان.
 `;
 
     const result = await ai.models.generateContent({
@@ -132,7 +131,8 @@ app.post('/api/analyze-recitation', async (req, res) => {
           parts: [
             {
               inlineData: {
-                mimeType: String(mimeType || 'audio/webm').split(';')[0],
+                mimeType: String(mimeType || 'audio/webm')
+                  .split(';')[0],
                 data: cleanBase64
               }
             },
@@ -145,20 +145,19 @@ app.post('/api/analyze-recitation', async (req, res) => {
       }
     });
 
-    const responseText = result.text;
-
-    if (!responseText) {
+    if (!result.text) {
       return res.status(502).json({
-        error: 'لم يرجع نموذج الذكاء الاصطناعي نتيجة.'
+        error: 'لم يرجع الذكاء الاصطناعي نتيجة للتحليل.'
       });
     }
 
     let analysis: any;
 
     try {
-      analysis = JSON.parse(responseText);
+      analysis = JSON.parse(result.text);
     } catch {
-      console.error('Gemini returned invalid JSON:', responseText);
+      console.error('Invalid Gemini JSON response:', result.text);
+
       return res.status(502).json({
         error: 'تعذّر قراءة نتيجة تحليل التلاوة.'
       });
@@ -166,8 +165,12 @@ app.post('/api/analyze-recitation', async (req, res) => {
 
     return res.json({
       score: Number(analysis.score ?? 0),
-      errors: Array.isArray(analysis.errors) ? analysis.errors : [],
-      words: Array.isArray(analysis.words) ? analysis.words : [],
+      errors: Array.isArray(analysis.errors)
+        ? analysis.errors
+        : [],
+      words: Array.isArray(analysis.words)
+        ? analysis.words
+        : [],
       advice: String(analysis.advice ?? ''),
       surahId,
       ayahNumber
@@ -182,46 +185,49 @@ app.post('/api/analyze-recitation', async (req, res) => {
 });
 
 async function startServer() {
+  const projectRoot = process.cwd();
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
+      configFile: path.resolve(projectRoot, 'vite.config.ts'),
+      root: projectRoot,
       server: { middlewareMode: true },
       appType: 'spa'
     });
 
     app.use(vite.middlewares);
   } else {
-    // البحث عن مجلد dist في أكثر من مسار محتمل
-    const possibleDistPaths = [
-      path.resolve(process.cwd(), 'dist'),
-      path.resolve(process.cwd(), '../dist'),
-      path.resolve(process.cwd(), '../../dist'),
-      path.resolve(process.cwd(), 'src/dist')
-    ];
+    const distPath = path.resolve(projectRoot, 'dist');
+    const indexPath = path.join(distPath, 'index.html');
 
-    const distPath = possibleDistPaths.find((folder) =>
-      fs.existsSync(path.join(folder, 'index.html'))
-    );
+    console.log('Project directory:', projectRoot);
+    console.log('Web build directory:', distPath);
 
-    console.log('Current working directory:', process.cwd());
-    console.log('Checked dist paths:', possibleDistPaths);
-    console.log('Found dist directory:', distPath || 'NOT FOUND');
+    // بناء الواجهة تلقائياً إذا كانت مفقودة
+    if (!fs.existsSync(indexPath)) {
+      console.log('dist/index.html is missing. Starting Vite build...');
 
-    if (distPath) {
-      app.use(express.static(distPath));
-
-      app.get('*', (_req, res) => {
-        res.sendFile(path.join(distPath, 'index.html'));
-      });
-    } else {
-      app.get('*', (req, res) => {
-        res.status(503).json({
-          error: 'ملفات الواجهة غير موجودة.',
-          workingDirectory: process.cwd(),
-          checkedPaths: possibleDistPaths,
-          hint: 'تأكد من نجاح أمر npm run build وإنشاء dist/index.html.'
-        });
+      await viteBuild({
+        configFile: path.resolve(projectRoot, 'vite.config.ts'),
+        root: projectRoot,
+        logLevel: 'info'
       });
     }
+
+    // لا يبدأ السيرفر بواجهة غير موجودة
+    if (!fs.existsSync(indexPath)) {
+      throw new Error(
+        `Build failed: index.html was not created at ${indexPath}`
+      );
+    }
+
+    app.use(express.static(distPath));
+
+    app.get('*', (_req, res) => {
+      res.sendFile(indexPath);
+    });
+
+    console.log('Web interface found:', indexPath);
   }
 
   app.listen(PORT, '0.0.0.0', () => {
