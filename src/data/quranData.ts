@@ -46,7 +46,7 @@ export interface PreloadedRecitationSample {
   titleAr: string;
   surahId: number;
   ayahNumber: number;
-  type: 'perfect' | 'has_errors';
+  type: 'perfect' | 'has_errors' | 'unverified';
   descriptionAr: string;
   intendedErrors?: {
     wordIndex: number;

@@ -62,6 +62,7 @@ export const RecitationStudio: React.FC<RecitationStudioProps> = ({
   const [isPlayingUserAudio, setIsPlayingUserAudio] = useState(false);
   const [feedbackMode, setFeedbackMode] = useState<'after' | 'instant'>('after');
   const [showSettingsDrawer, setShowSettingsDrawer] = useState(false);
+  const [recordedAcoustics, setRecordedAcoustics] = useState<any>(null);
 
   // Audio references
   const recorderRef = useRef<RecitationRecorder | null>(null);
