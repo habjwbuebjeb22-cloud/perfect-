@@ -36,14 +36,19 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: '50mb' }));
 
+// حالة السيرفر والذكاء الاصطناعي
 app.get('/api/status', (_req, res) => {
   res.json({
     status: 'ok',
     aiEnabled: Boolean(process.env.GEMINI_API_KEY),
-    model: MODEL_NAME
+    model: MODEL_NAME,
+    message: process.env.GEMINI_API_KEY
+      ? 'Mutqin server is running'
+      : 'GEMINI_API_KEY is missing'
   });
 });
 
+// تحليل تلاوة القرآن
 app.post('/api/analyze-recitation', async (req, res) => {
   try {
     const {
@@ -70,6 +75,7 @@ app.post('/api/analyze-recitation', async (req, res) => {
       });
     }
 
+    // استخراج نص الآية إن كان موجوداً في بيانات التطبيق
     const surahs = SURAHS_DATA as any[];
     const surah = surahs.find(
       item => Number(item.id ?? item.number) === Number(surahId)
@@ -93,31 +99,39 @@ app.post('/api/analyze-recitation', async (req, res) => {
         ? ayah
         : ayah?.text ?? ayah?.arabic ?? ayah?.content ?? '';
 
+    // إزالة بادئة data URL إذا كان التسجيل مرسلاً بهذه الصيغة
     const cleanBase64 = String(audioBase64).replace(
       /^data:[^,]*,/,
       ''
     );
 
+    const cleanMimeType = String(mimeType || 'audio/webm')
+      .split(';')[0]
+      .trim();
+
     const ai = new GoogleGenAI({ apiKey });
 
     const prompt = `
-أنت معلّم قرآن كريم متخصص في تصحيح التلاوة والتجويد.
+أنت معلّم قرآن كريم متخصص في تعليم التلاوة والتجويد.
 
-السورة: ${surahId}
-رقم الآية: ${ayahNumber}
-النص المرجعي: ${targetAyah || 'غير متوفر'}
+السورة: ${surahId ?? 'غير محددة'}
+رقم الآية: ${ayahNumber ?? 'غير محدد'}
+النص المرجعي للآية: ${targetAyah || 'غير متوفر'}
 مستوى المتعلم: ${proficiencyLevel || 'مبتدئ'}
-التفريغ المساعد: ${spokenTranscriptionFallback || 'غير متوفر'}
+التفريغ النصي المساعد: ${spokenTranscriptionFallback || 'غير متوفر'}
 المقاييس الصوتية: ${JSON.stringify(acousticMetrics ?? {})}
 
-استمع إلى التسجيل الصوتي الفعلي وحلّل التلاوة.
-قارنها بالنص المرجعي إذا كان متوفراً.
-قيّم النطق والتلاوة وأحكام التجويد التي يمكن سماعها بوضوح.
-لا تخترع أخطاء ولا تجزم بخطأ لا يمكن التحقق منه من الصوت.
-لا تعتبر اختلاف الصوت أو اللهجة وحده خطأً في التلاوة.
-اكتب نصيحة تعليمية واضحة باللغة العربية.
+المطلوب:
+1. استمع إلى التسجيل الصوتي الفعلي وحلّل ما يمكن سماعه بوضوح.
+2. قارن القراءة بالنص المرجعي إذا كان متوفراً.
+3. وضّح أخطاء النطق أو أحكام التجويد التي تستطيع تحديدها من التسجيل.
+4. لا تخترع أخطاء، ولا تدّعِ سماع شيء غير واضح.
+5. لا تعتبر المقاييس الصوتية وحدها دليلاً قاطعاً على خطأ في التلاوة.
+6. إذا لم يكن التسجيل واضحاً أو تعذّر تقييم حكم معين، اذكر ذلك في النصيحة.
+7. اجعل النصائح التعليمية باللغة العربية وبأسلوب بسيط ومشجع.
+8. لا تمنح درجة عالية أو منخفضة بلا أساس واضح من التسجيل.
 
-أعد JSON فقط بهذا الشكل:
+أعد النتيجة بصيغة JSON فقط، دون Markdown، وفق هذا الشكل:
 {
   "score": 0,
   "errors": [],
@@ -125,8 +139,10 @@ app.post('/api/analyze-recitation', async (req, res) => {
   "advice": "نصيحة باللغة العربية"
 }
 
-score رقم من 0 إلى 100.
-errors وwords مصفوفتان.
+score: عدد صحيح من 0 إلى 100.
+errors: مصفوفة بالأخطاء المسموعة بوضوح.
+words: مصفوفة بملاحظات الكلمات التي تحتاج إلى تصحيح.
+advice: نصيحة تعليمية باللغة العربية.
 `;
 
     const result = await ai.models.generateContent({
@@ -137,12 +153,13 @@ errors وwords مصفوفتان.
           parts: [
             {
               inlineData: {
-                mimeType: String(mimeType || 'audio/webm')
-                  .split(';')[0],
+                mimeType: cleanMimeType,
                 data: cleanBase64
               }
             },
-            { text: prompt }
+            {
+              text: prompt
+            }
           ]
         }
       ],
@@ -172,18 +189,21 @@ errors وwords مصفوفتان.
       });
     }
 
+    const parsedScore = Number(analysis.score);
+
     return res.json({
-      score: Math.max(
-        0,
-        Math.min(100, Number(analysis.score) || 0)
-      ),
+      score: Number.isFinite(parsedScore)
+        ? Math.max(0, Math.min(100, Math.round(parsedScore)))
+        : 0,
       errors: Array.isArray(analysis.errors)
         ? analysis.errors
         : [],
       words: Array.isArray(analysis.words)
         ? analysis.words
         : [],
-      advice: String(analysis.advice ?? ''),
+      advice: String(
+        analysis.advice ?? 'استمر بالتدريب، وحاول القراءة بهدوء ووضوح.'
+      ),
       surahId,
       ayahNumber
     });
@@ -200,14 +220,30 @@ errors وwords مصفوفتان.
     ) {
       return res.status(502).json({
         error:
-          'نموذج الذكاء الاصطناعي غير متاح لهذا المفتاح. تحقق من اسم النموذج وإمكانية الوصول إليه.'
+          'نموذج Gemini غير متاح لهذا المفتاح أو اسم النموذج غير صحيح. راجع اسم النموذج وإمكانية الوصول إليه.'
+      });
+    }
+
+    if (status === 401 || status === 403) {
+      return res.status(502).json({
+        error:
+          'مفتاح Gemini غير صالح أو لا يملك صلاحية الوصول إلى النموذج.'
       });
     }
 
     if (status === 429) {
       return res.status(429).json({
         error:
-          'وصل الطلب إلى حد الاستخدام المسموح. حاول لاحقاً.'
+          'وصلت إلى حد الاستخدام المسموح لخدمة Gemini. حاول لاحقاً.'
+      });
+    }
+
+    if (
+      message.toLowerCase().includes('timeout') ||
+      message.toLowerCase().includes('timed out')
+    ) {
+      return res.status(504).json({
+        error: 'تأخر الرد من خدمة الذكاء الاصطناعي. حاول مجدداً.'
       });
     }
 
@@ -218,15 +254,13 @@ errors وwords مصفوفتان.
   }
 });
 
+// تشغيل الواجهة والسيرفر
 async function startServer() {
   const projectRoot = process.cwd();
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      configFile: path.resolve(
-        projectRoot,
-        'vite.config.ts'
-      ),
+      configFile: path.resolve(projectRoot, 'vite.config.ts'),
       root: projectRoot,
       server: {
         middlewareMode: true
@@ -248,10 +282,7 @@ async function startServer() {
       );
 
       await viteBuild({
-        configFile: path.resolve(
-          projectRoot,
-          'vite.config.ts'
-        ),
+        configFile: path.resolve(projectRoot, 'vite.config.ts'),
         root: projectRoot,
         logLevel: 'info'
       });
@@ -274,6 +305,10 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
+    console.log(`Gemini model: ${MODEL_NAME}`);
+    console.log(
+      `Gemini API key configured: ${Boolean(process.env.GEMINI_API_KEY)}`
+    );
   });
 }
 
