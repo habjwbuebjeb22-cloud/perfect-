@@ -14,7 +14,7 @@ dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
-const MODEL_NAME = 'gemini-3.8-flash';
+const MODEL_NAME ='gemini-3.5-flash-lite';
 
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
