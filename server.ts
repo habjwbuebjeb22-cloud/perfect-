@@ -14,7 +14,7 @@ dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
-const MODEL_NAME ='gemini-3.5-flash-lite';
+const MODEL_NAME = 'gemini-3.5-flash-lite';
 
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -75,8 +75,9 @@ app.post('/api/analyze-recitation', async (req, res) => {
       });
     }
 
-    // استخراج نص الآية إن كان موجوداً في بيانات التطبيق
+    // استخراج نص الآية من بيانات التطبيق
     const surahs = SURAHS_DATA as any[];
+
     const surah = surahs.find(
       item => Number(item.id ?? item.number) === Number(surahId)
     );
@@ -99,7 +100,7 @@ app.post('/api/analyze-recitation', async (req, res) => {
         ? ayah
         : ayah?.text ?? ayah?.arabic ?? ayah?.content ?? '';
 
-    // إزالة بادئة data URL إذا كان التسجيل مرسلاً بهذه الصيغة
+    // إزالة بادئة data URL من التسجيل إن وجدت
     const cleanBase64 = String(audioBase64).replace(
       /^data:[^,]*,/,
       ''
@@ -122,16 +123,15 @@ app.post('/api/analyze-recitation', async (req, res) => {
 المقاييس الصوتية: ${JSON.stringify(acousticMetrics ?? {})}
 
 المطلوب:
-1. استمع إلى التسجيل الصوتي الفعلي وحلّل ما يمكن سماعه بوضوح.
-2. قارن القراءة بالنص المرجعي إذا كان متوفراً.
-3. وضّح أخطاء النطق أو أحكام التجويد التي تستطيع تحديدها من التسجيل.
-4. لا تخترع أخطاء، ولا تدّعِ سماع شيء غير واضح.
-5. لا تعتبر المقاييس الصوتية وحدها دليلاً قاطعاً على خطأ في التلاوة.
-6. إذا لم يكن التسجيل واضحاً أو تعذّر تقييم حكم معين، اذكر ذلك في النصيحة.
-7. اجعل النصائح التعليمية باللغة العربية وبأسلوب بسيط ومشجع.
-8. لا تمنح درجة عالية أو منخفضة بلا أساس واضح من التسجيل.
+1. حلّل التسجيل الصوتي الفعلي، ولا تدّعِ سماع شيء غير واضح.
+2. قارن القراءة بالنص المرجعي إن توفر.
+3. لا تخترع أخطاء في النطق أو التجويد.
+4. لا تعتبر المقاييس الصوتية وحدها دليلاً قاطعاً على الخطأ.
+5. إذا تعذّر تحديد خطأ بثقة، وضّح ذلك.
+6. اجعل النصائح باللغة العربية وبأسلوب بسيط ومشجع.
+7. أعد النتيجة بصيغة JSON فقط دون Markdown.
 
-أعد النتيجة بصيغة JSON فقط، دون Markdown، وفق هذا الشكل:
+أعد النتيجة بهذا الشكل:
 {
   "score": 0,
   "errors": [],
@@ -141,7 +141,10 @@ app.post('/api/analyze-recitation', async (req, res) => {
 
 score: عدد صحيح من 0 إلى 100.
 errors: مصفوفة بالأخطاء المسموعة بوضوح.
-words: مصفوفة بملاحظات الكلمات التي تحتاج إلى تصحيح.
+words: مصفوفة بملاحظات الكلمات. يمكن أن يكون كل عنصر نصاً أو كائناً يحتوي على:
+word, status, utteredText, phoneticDifference,
+ruleFlagged, explanationAr, stepByStepPronunciation,
+confidenceScore, needsHumanReview, severity.
 advice: نصيحة تعليمية باللغة العربية.
 `;
 
@@ -191,21 +194,136 @@ advice: نصيحة تعليمية باللغة العربية.
 
     const parsedScore = Number(analysis.score);
 
+    const score = Number.isFinite(parsedScore)
+      ? Math.max(0, Math.min(100, Math.round(parsedScore)))
+      : 0;
+
+    const targetWords = String(targetAyah || '')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+
+    const aiWords = Array.isArray(analysis.words)
+      ? analysis.words
+      : [];
+
+    const validStatuses = [
+      'correct',
+      'warning',
+      'error',
+      'permissible_waqf',
+      'uncertain',
+      'omitted',
+      'unverified'
+    ];
+
+    const validSeverities = [
+      'none',
+      'jali',
+      'khafi',
+      'waqf_note',
+      'unverified'
+    ];
+
+    const wordsEvaluation = targetWords.map((word, index) => {
+      const item = aiWords[index];
+
+      const itemObject =
+        item && typeof item === 'object' ? item : {};
+
+      const status = validStatuses.includes(itemObject.status)
+        ? itemObject.status
+        : 'uncertain';
+
+      const severity = validSeverities.includes(itemObject.severity)
+        ? itemObject.severity
+        : 'unverified';
+
+      const confidence = Number(itemObject.confidenceScore);
+
+      return {
+        wordIndex: index,
+        wordUthmani: word,
+        wordSimple: word,
+        status,
+        utteredText: itemObject.utteredText ?? '',
+        phoneticDifference: itemObject.phoneticDifference ?? '',
+        ruleFlagged: itemObject.ruleFlagged ?? '',
+        explanationAr:
+          itemObject.explanationAr ??
+          (typeof item === 'string' ? item : ''),
+        stepByStepPronunciation:
+          itemObject.stepByStepPronunciation ?? '',
+        confidenceScore: Number.isFinite(confidence)
+          ? Math.max(0, Math.min(1, confidence))
+          : 0,
+        needsHumanReview: itemObject.needsHumanReview ?? true,
+        severity
+      };
+    });
+
+    const validLevels = [
+      'beginner',
+      'intermediate',
+      'advanced'
+    ];
+
+    const level = validLevels.includes(proficiencyLevel)
+      ? proficiencyLevel
+      : 'beginner';
+
+    const totalErrors = Array.isArray(analysis.errors)
+      ? analysis.errors.length
+      : 0;
+
     return res.json({
-      score: Number.isFinite(parsedScore)
-        ? Math.max(0, Math.min(100, Math.round(parsedScore)))
-        : 0,
-      errors: Array.isArray(analysis.errors)
-        ? analysis.errors
-        : [],
-      words: Array.isArray(analysis.words)
-        ? analysis.words
-        : [],
-      advice: String(
-        analysis.advice ?? 'استمر بالتدريب، وحاول القراءة بهدوء ووضوح.'
+      ayahNumber: Number(ayahNumber) || 0,
+
+      evaluationStatus: targetWords.length
+        ? 'needs_human_review'
+        : 'unable_to_evaluate',
+
+      overallScore: targetWords.length ? score : null,
+
+      proficiencyLevel: level,
+
+      totalWords: targetWords.length,
+
+      // لا نحسب الكلمات صحيحة تلقائياً دون مطابقة موثوقة.
+      correctWordsCount: wordsEvaluation.filter(
+        (word: any) => word.status === 'correct'
+      ).length,
+
+      jaliErrorsCount: totalErrors,
+      khafiErrorsCount: 0,
+      waqfNotesCount: 0,
+
+      scoresBreakdown: {
+        wordAlignmentScore: score,
+        pronunciationScore: score,
+        tajweedScore: score,
+        recordingConfidence: 0
+      },
+
+      wordsEvaluation,
+
+      acousticSummary: {
+        tempoEstBpm: 0,
+        audioClarity: 'unreliable',
+        totalDurationSeconds:
+          Number(acousticMetrics?.totalDurationSeconds ?? 0) || 0
+      },
+
+      generalAdviceAr: String(
+        analysis.advice ??
+          'استمر بالتدريب، واقرأ بهدوء ووضوح، وراجع مواضع التجويد مع معلّم مختص.'
       ),
-      surahId,
-      ayahNumber
+
+      disclaimerAr:
+        'هذا التحليل الآلي مساعد للتعلّم، وليس حكماً نهائياً على صحة التلاوة. يُرجى مراجعة معلّم قرآن مختص.',
+
+      asrLimitationNoticeAr:
+        'قد لا يستطيع النظام تحديد جميع أخطاء النطق والتجويد بدقة.'
     });
   } catch (error: any) {
     console.error('Recitation analysis failed:', error);
